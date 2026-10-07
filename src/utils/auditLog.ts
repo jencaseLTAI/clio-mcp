@@ -145,7 +145,7 @@ export const AUDIT_ARG_ALLOWLIST: RedactPolicy = {
   folder_exists: ["matter_id", "parent_folder_id"],
   create_folder: ["matter_id", "parent_folder_id", "if_not_exists"],
   // tasks (never name or description)
-  list_tasks: ["matter_id", "status", "due_date_start", "due_date_end", "limit"],
+  list_tasks: ["matter_id", "status", "due_date_start", "due_date_end", "limit", "all_pages"],
   create_task: ["matter_id", "priority", "due_date", "assignee_id"],
   update_task: ["task_id", "priority", "due_date", "status", "assignee_id"],
   complete_task: ["task_id"],

@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before this file existed are described on the [GitHub Releases](https://github.com/oktopeak/clio-mcp/releases) page.
 
+
+## Law Tech AI fork: task time estimates (based on v2.3.0)
+
+- `list_tasks` now requests Clio's `time_estimated` field and returns `time_estimated_hours` and `time_estimated_seconds` per task (null when no estimate is set).
+- New `all_pages` option on `list_tasks`: fetches every matching task (up to 2,000) and adds an `estimate_summary` with total estimated hours, overall and per assignee, plus counts of tasks with and without an estimate. Combine with a due date range to total a week.
+- Read-only change. No new tools; write tools are unchanged.
+
 ## [Unreleased]
 
 ## [2.3.0] - 2026-09-07

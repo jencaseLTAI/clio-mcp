@@ -3,7 +3,41 @@ import z from "zod";
 import { clioGet, clioPost, clioPatch, extractNextPageToken } from "../utils/clioClient.js";
 import { appendAuditLog } from "../utils/auditLog.js";
 
-const TASK_FIELDS = "id,name,priority,due_at,status,assignee{id,name},matter{id,display_number},reminders{id,notification_method}";
+const TASK_FIELDS = "id,name,priority,due_at,status,time_estimated,assignee{id,name},matter{id,display_number},reminders{id,notification_method}";
+
+// Clio returns Task time_estimated as an integer number of seconds.
+const SECONDS_PER_HOUR = 3600;
+const ALL_PAGES_PAGE_SIZE = 200;
+const ALL_PAGES_MAX_PAGES = 10;
+
+function estimateHours(seconds: unknown): number | null {
+  return typeof seconds === "number" ? Math.round((seconds / SECONDS_PER_HOUR) * 100) / 100 : null;
+}
+
+function summarizeEstimates(tasks: any[]) {
+  let totalSeconds = 0;
+  let withEstimate = 0;
+  const byAssignee = new Map<string, { assignee: string; estimated_hours: number; tasks_with_estimate: number; tasks_without_estimate: number }>();
+  for (const t of tasks) {
+    const key = t.assignee?.name ?? "Unassigned";
+    const row = byAssignee.get(key) ?? { assignee: key, estimated_hours: 0, tasks_with_estimate: 0, tasks_without_estimate: 0 };
+    if (typeof t.time_estimated === "number") {
+      totalSeconds += t.time_estimated;
+      withEstimate++;
+      row.estimated_hours += t.time_estimated;
+      row.tasks_with_estimate++;
+    } else {
+      row.tasks_without_estimate++;
+    }
+    byAssignee.set(key, row);
+  }
+  return {
+    total_estimated_hours: estimateHours(totalSeconds),
+    tasks_with_estimate: withEstimate,
+    tasks_without_estimate: tasks.length - withEstimate,
+    by_assignee: [...byAssignee.values()].map((r) => ({ ...r, estimated_hours: estimateHours(r.estimated_hours) })),
+  };
+}
 
 const STATUS_MAP: Record<string, string> = { Pending: "pending", Complete: "complete", "In Progress": "in_progress", "In Review": "in_review", "Draft": "draft" };
 
@@ -19,24 +53,40 @@ export function registerTaskTools(server: McpServer): void {
         due_date_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("ISO date (YYYY-MM-DD) — tasks due on or before this date"),
         limit: z.number().int().min(1).max(200).default(25).describe("Max results to return (1-200)"),
         page_token: z.string().optional().describe("Cursor from a previous list_tasks response to fetch the next page"),
+        all_pages: z.boolean().default(false).describe("Fetch every matching task (up to 2,000) instead of one page, and include an estimate_summary with total estimated hours overall and per assignee. Use with a due date range to total a week."),
       },
     },
-    async ({ matter_id, status, due_date_start, due_date_end, limit, page_token }) => {
+    async ({ matter_id, status, due_date_start, due_date_end, limit, page_token, all_pages }) => {
       try {
-        const params: Record<string, string> = { fields: TASK_FIELDS, limit: String(limit) };
+        const pageSize = all_pages ? ALL_PAGES_PAGE_SIZE : limit;
+        const params: Record<string, string> = { fields: TASK_FIELDS, limit: String(pageSize) };
         if (matter_id) params["matter_id"] = String(matter_id);
         if (status) params["status"] = STATUS_MAP[status];
         if (due_date_start) params["due_at_from"] = due_date_start;
         if (due_date_end) params["due_at_to"] = due_date_end;
-        if (page_token) params["page_token"] = page_token;
+        if (page_token && !all_pages) params["page_token"] = page_token;
 
-        const data = await clioGet("/tasks.json", params);
-        const tasks = data.data as any[];
-        const nextPageToken = tasks.length >= limit ? extractNextPageToken(data.meta) : null;
+        let data = await clioGet("/tasks.json", params);
+        let tasks = data.data as any[];
+        let nextPageToken = tasks.length >= pageSize ? extractNextPageToken(data.meta) : null;
+        let truncated = false;
+
+        if (all_pages) {
+          let pages = 1;
+          while (nextPageToken !== null && pages < ALL_PAGES_MAX_PAGES) {
+            data = await clioGet("/tasks.json", { ...params, page_token: nextPageToken });
+            const page = data.data as any[];
+            tasks = tasks.concat(page);
+            nextPageToken = page.length >= pageSize ? extractNextPageToken(data.meta) : null;
+            pages++;
+          }
+          truncated = nextPageToken !== null;
+          nextPageToken = null;
+        }
 
         await appendAuditLog({
           tool: "list_tasks",
-          args: { matter_id, status, due_date_start, due_date_end, limit, page_token },
+          args: { matter_id, status, due_date_start, due_date_end, limit, page_token, all_pages },
           outcome: "success",
           result_count: tasks?.length ?? 0,
           ...(matter_id && { matter_id }),
@@ -49,6 +99,8 @@ export function registerTaskTools(server: McpServer): void {
             priority: t.priority,
             due_date: t.due_at ? t.due_at.substring(0, 10) : null,
             status: t.status,
+            time_estimated_hours: estimateHours(t.time_estimated),
+            time_estimated_seconds: typeof t.time_estimated === "number" ? t.time_estimated : null,
             assignee: t.assignee ? { id: t.assignee.id, name: t.assignee.name } : null,
             matter: t.matter ? { id: t.matter.id, display_number: t.matter.display_number } : null,
             reminder: t.reminders?.length > 0
@@ -58,13 +110,14 @@ export function registerTaskTools(server: McpServer): void {
           total_count: data.meta?.records ?? tasks.length,
           has_more: nextPageToken !== null,
           next_page_token: nextPageToken,
+          ...(all_pages && { estimate_summary: summarizeEstimates(tasks), truncated }),
         };
 
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err: any) {
         await appendAuditLog({
           tool: "list_tasks",
-          args: { matter_id, status, due_date_start, due_date_end, limit, page_token },
+          args: { matter_id, status, due_date_start, due_date_end, limit, page_token, all_pages },
           outcome: "error",
           error_message: err.message,
           ...(matter_id && { matter_id }),
