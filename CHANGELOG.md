@@ -2,14 +2,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before this file existed are described on the [GitHub Releases](https://github.com/oktopeak/clio-mcp/releases) page.
 
-
-## Law Tech AI fork: task time estimates (based on v2.3.0)
-
-- `list_tasks` now requests Clio's `time_estimated` field and returns `time_estimated_hours` and `time_estimated_seconds` per task (null when no estimate is set).
-- New `all_pages` option on `list_tasks`: fetches every matching task (up to 2,000) and adds an `estimate_summary` with total estimated hours, overall and per assignee, plus counts of tasks with and without an estimate. Combine with a due date range to total a week.
-- Read-only change. No new tools; write tools are unchanged.
-
 ## [Unreleased]
+
+## [2.3.0-lta.1] - 2026-10-07
+
+Law Tech AI fork of v2.3.0: task time estimates.
+
+### Added
+- `list_tasks` requests Clio's `time_estimated` field and returns `time_estimated_hours` and `time_estimated_seconds` per task (null when Clio returns no value).
+- `all_pages` option on `list_tasks` for totaling a date range. It requires `due_date_start` and `due_date_end`, rejects `page_token`, reads every matching task (up to 2,000), and returns `estimate_summary`: total estimated hours overall and per assignee, counts of tasks with and without an estimate, and a `truncated` flag. Task rows are returned only when `include_tasks` is true. A due-date range includes completed tasks unless a `status` filter is passed, and never includes tasks with no due date.
+
+### Notes
+- Assumes Clio stores the estimate in seconds; Clio does not document the unit. Confirm against a task with a known estimate. Also confirm whether an unset estimate comes back as null or 0.
+- `list_tasks` is the only tool changed. No tools were added, and `create_task`, `update_task` and `complete_task` send exactly the same requests as v2.3.0.
 
 ## [2.3.0] - 2026-09-07
 
