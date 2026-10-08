@@ -97,54 +97,100 @@ describe("list_tasks", () => {
 });
 
 describe("list_tasks time estimates", () => {
-  it("requests time_estimated from Clio", async () => {
+  const WEEK = { due_date_start: "2026-10-12", due_date_end: "2026-10-16" };
+  const parse = (r: any) => JSON.parse(r.content[0].text);
+
+  it("requests time_estimated from Clio on list_tasks", async () => {
     mockClioGet.mockResolvedValue({ data: [], meta: { records: 0, paging: {} } });
     await handlers.get("list_tasks")!({ limit: 25 });
     expect(mockClioGet.mock.calls[0][1].fields).toContain("time_estimated");
   });
 
-  it("returns the estimate in hours and raw seconds, and null when unset", async () => {
+  it("does not add time_estimated to write requests", async () => {
+    mockClioPatch.mockResolvedValue({ data: TASK_FIXTURE });
+    await handlers.get("update_task")!({ task_id: 1, priority: "High" });
+    await handlers.get("complete_task")!({ task_id: 1 });
+    for (const call of mockClioPatch.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain("time_estimated");
+    }
+  });
+
+  it("returns the estimate in hours and raw value, null when unset, and 0 as 0", async () => {
     mockClioGet.mockResolvedValue({
-      data: [{ ...TASK_FIXTURE, time_estimated: 5400 }, { ...TASK_FIXTURE, id: 2 }],
-      meta: { records: 2, paging: {} },
+      data: [{ ...TASK_FIXTURE, time_estimated: 5400 }, { ...TASK_FIXTURE, id: 2 }, { ...TASK_FIXTURE, id: 3, time_estimated: 0 }],
+      meta: { records: 3, paging: {} },
     });
-    const parsed = JSON.parse(((await handlers.get("list_tasks")!({ limit: 25 })) as any).content[0].text);
+    const parsed = parse(await handlers.get("list_tasks")!({ limit: 25 }));
     expect(parsed.tasks[0].time_estimated_hours).toBe(1.5);
     expect(parsed.tasks[0].time_estimated_seconds).toBe(5400);
     expect(parsed.tasks[1].time_estimated_hours).toBeNull();
+    expect(parsed.tasks[2].time_estimated_hours).toBe(0);
     expect(parsed.estimate_summary).toBeUndefined();
+    expect(parsed.truncated).toBeUndefined();
   });
 
-  it("all_pages follows every page and totals estimates overall and per assignee", async () => {
+  it("all_pages requires a due date range", async () => {
+    const result = await handlers.get("list_tasks")!({ limit: 25, all_pages: true }) as any;
+    expect(result.isError).toBe(true);
+    expect(mockClioGet).not.toHaveBeenCalled();
+  });
+
+  it("all_pages rejects page_token", async () => {
+    const result = await handlers.get("list_tasks")!({ limit: 25, all_pages: true, page_token: "x", ...WEEK }) as any;
+    expect(result.isError).toBe(true);
+    expect(mockClioGet).not.toHaveBeenCalled();
+  });
+
+  it("all_pages follows every page, totals per assignee by id, and omits rows by default", async () => {
     const page1 = Array.from({ length: 200 }, (_, i) => ({
       ...TASK_FIXTURE, id: i + 1, time_estimated: 1800, assignee: { id: 7, name: "Jamaal Solomon" },
     }));
     mockClioGet
-      .mockResolvedValueOnce({ data: page1, meta: { records: 202, paging: { next: "https://app.clio.com/api/v4/tasks.json?page_token=p2" } } })
+      .mockResolvedValueOnce({ data: page1, meta: { records: 203, paging: { next: "https://app.clio.com/api/v4/tasks.json?page_token=p2" } } })
       .mockResolvedValueOnce({ data: [
         { ...TASK_FIXTURE, id: 201, time_estimated: 3600, assignee: { id: 8, name: "Sally Reddy" } },
         { ...TASK_FIXTURE, id: 202, assignee: { id: 8, name: "Sally Reddy" } },
-      ], meta: { records: 202, paging: {} } });
-    const parsed = JSON.parse(((await handlers.get("list_tasks")!({ limit: 25, all_pages: true })) as any).content[0].text);
+        { ...TASK_FIXTURE, id: 203, time_estimated: 900, assignee: { id: 9, name: "Sally Reddy" } },
+      ], meta: { records: 203, paging: {} } });
+    const parsed = parse(await handlers.get("list_tasks")!({ limit: 25, all_pages: true, ...WEEK }));
     expect(mockClioGet).toHaveBeenCalledTimes(2);
-    expect(mockClioGet.mock.calls[1][1]).toEqual(expect.objectContaining({ page_token: "p2", limit: "200" }));
-    expect(parsed.tasks).toHaveLength(202);
+    expect(mockClioGet.mock.calls[1][1]).toEqual(expect.objectContaining({ page_token: "p2", limit: "200", due_at_from: "2026-10-12" }));
+    expect(parsed.tasks).toBeUndefined();
     expect(parsed.has_more).toBe(false);
-    expect(parsed.truncated).toBe(false);
-    expect(parsed.estimate_summary.total_estimated_hours).toBe(101);
-    expect(parsed.estimate_summary.tasks_with_estimate).toBe(201);
-    expect(parsed.estimate_summary.tasks_without_estimate).toBe(1);
-    const sally = parsed.estimate_summary.by_assignee.find((r: any) => r.assignee === "Sally Reddy");
-    expect(sally).toEqual({ assignee: "Sally Reddy", estimated_hours: 1, tasks_with_estimate: 1, tasks_without_estimate: 1 });
+    const sum = parsed.estimate_summary;
+    expect(sum.total_estimated_hours).toBe(101.25);
+    expect(sum.tasks_counted).toBe(203);
+    expect(sum.tasks_with_estimate).toBe(202);
+    expect(sum.tasks_without_estimate).toBe(1);
+    expect(sum.truncated).toBe(false);
+    const sally8 = sum.by_assignee.find((r: any) => r.assignee_id === 8);
+    expect(sally8).toEqual({ assignee_id: 8, assignee: "Sally Reddy", estimated_hours: 1, tasks_with_estimate: 1, tasks_without_estimate: 1 });
+    expect(sum.by_assignee.find((r: any) => r.assignee_id === 9).estimated_hours).toBe(0.25);
   });
 
-  it("all_pages stops at the page cap and reports truncated", async () => {
+  it("all_pages stops early on a short page", async () => {
+    mockClioGet.mockResolvedValueOnce({ data: [{ ...TASK_FIXTURE, time_estimated: 3600 }], meta: { records: 1, paging: {} } });
+    const parsed = parse(await handlers.get("list_tasks")!({ limit: 25, all_pages: true, ...WEEK }));
+    expect(mockClioGet).toHaveBeenCalledTimes(1);
+    expect(parsed.estimate_summary.total_estimated_hours).toBe(1);
+  });
+
+  it("all_pages returns rows when include_tasks is true", async () => {
+    mockClioGet.mockResolvedValueOnce({ data: [{ ...TASK_FIXTURE, time_estimated: 3600 }], meta: { records: 1, paging: {} } });
+    const parsed = parse(await handlers.get("list_tasks")!({ limit: 25, all_pages: true, include_tasks: true, ...WEEK }));
+    expect(parsed.tasks).toHaveLength(1);
+    expect(parsed.tasks[0].time_estimated_hours).toBe(1);
+  });
+
+  it("all_pages stops at the page cap and flags truncation in both places", async () => {
     const fullPage = Array.from({ length: 200 }, (_, i) => ({ ...TASK_FIXTURE, id: i + 1 }));
     mockClioGet.mockResolvedValue({ data: fullPage, meta: { records: 5000, paging: { next: "https://app.clio.com/api/v4/tasks.json?page_token=more" } } });
-    const parsed = JSON.parse(((await handlers.get("list_tasks")!({ limit: 25, all_pages: true })) as any).content[0].text);
+    const parsed = parse(await handlers.get("list_tasks")!({ limit: 25, all_pages: true, ...WEEK }));
     expect(mockClioGet).toHaveBeenCalledTimes(10);
-    expect(parsed.truncated).toBe(true);
-    expect(parsed.tasks).toHaveLength(2000);
+    expect(parsed.has_more).toBe(true);
+    expect(parsed.estimate_summary.truncated).toBe(true);
+    expect(parsed.estimate_summary.tasks_counted).toBe(2000);
+    expect(parsed.total_count).toBe(5000);
   });
 });
 
