@@ -110,6 +110,7 @@ describe("list_tasks time estimates", () => {
     mockClioPatch.mockResolvedValue({ data: TASK_FIXTURE });
     await handlers.get("update_task")!({ task_id: 1, priority: "High" });
     await handlers.get("complete_task")!({ task_id: 1 });
+    expect(mockClioPatch).toHaveBeenCalledTimes(2);
     for (const call of mockClioPatch.mock.calls) {
       expect(JSON.stringify(call)).not.toContain("time_estimated");
     }
