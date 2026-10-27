@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-## [Unreleased] Law Tech AI fork on upstream 703d8cd
+## Law Tech AI fork on upstream 703d8cd (unreleased)
 
 Law Tech AI fork of upstream `main` at 703d8cd (2.5.0): adds task time estimates. Upstream's own changes in 2.3.1, 2.4.0 and 2.5.0 are listed below, unchanged.
 
